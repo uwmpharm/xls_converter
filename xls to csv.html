@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XLS (HTML) to CSV Batch Converter</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background-color: #f4f4f9;
+            color: #333;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 50px;
+        }
+        #drop-zone {
+            width: 100%;
+            max-width: 600px;
+            height: 250px;
+            border: 3px dashed #007bff;
+            border-radius: 15px;
+            background-color: #fff;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            font-size: 1.2rem;
+            color: #555;
+            transition: background-color 0.3s, border-color 0.3s;
+            cursor: pointer;
+        }
+        #drop-zone.dragover {
+            background-color: #e3f2fd;
+            border-color: #0056b3;
+            color: #0056b3;
+        }
+        #status {
+            margin-top: 20px;
+            max-width: 600px;
+            width: 100%;
+            font-size: 0.9rem;
+        }
+        .success { color: green; }
+        .error { color: red; }
+    </style>
+</head>
+<body>
+
+    <h2>XLS (HTML) to CSV Converter</h2>
+    <p>Drag and drop your "fake" .xls files below. Headers will be converted to snake_case.</p>
+
+    <div id="drop-zone">
+        Drag & Drop your .xls files here
+    </div>
+
+    <div id="status"></div>
+
+    <script>
+        const dropZone = document.getElementById('drop-zone');
+        const statusDiv = document.getElementById('status');
+
+        // Prevent default browser behavior for drag-and-drop
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, preventDefaults, false);
+            document.body.addEventListener(eventName, preventDefaults, false);
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        // Highlight drop zone on hover
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropZone.addEventListener(eventName, () => dropZone.classList.add('dragover'), false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, () => dropZone.classList.remove('dragover'), false);
+        });
+
+        // Handle dropped files
+        dropZone.addEventListener('drop', handleDrop, false);
+
+        function handleDrop(e) {
+            let dt = e.dataTransfer;
+            let files = dt.files;
+            statusDiv.innerHTML = ''; // Clear previous statuses
+
+            Array.from(files).forEach(processFile);
+        }
+
+        // Helper function to convert text to snake_case
+        function toSnakeCase(str) {
+            return str
+                .trim()
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, '_') // Replace spaces/special chars with underscores
+                .replace(/^_+|_+$/g, '');    // Remove any leading or trailing underscores
+        }
+
+        function processFile(file) {
+            if (!file.name.endsWith('.xls') && !file.name.endsWith('.htm') && !file.name.endsWith('.html')) {
+                logStatus(`Skipped <b>${file.name}</b>: Not a recognized extension.`, 'error');
+                return;
+            }
+
+            const reader = new FileReader();
+            
+            reader.onload = function(e) {
+                const htmlContent = e.target.result;
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(htmlContent, 'text/html');
+                
+                // Find the first table in the file
+                const table = doc.querySelector('table');
+                
+                if (!table) {
+                    logStatus(`Error: No HTML table found in <b>${file.name}</b>.`, 'error');
+                    return;
+                }
+
+                // Convert table to CSV string
+                let csvData = [];
+                const rows = table.querySelectorAll('tr');
+                
+                rows.forEach((row, rowIndex) => {
+                    let rowData = [];
+                    const cols = row.querySelectorAll('td, th');
+                    
+                    cols.forEach(col => {
+                        let data = col.innerText.trim();
+                        
+                        // If it is the first row (headers), apply snake_case conversion
+                        if (rowIndex === 0) {
+                            data = toSnakeCase(data);
+                        }
+                        
+                        // Escape quotes, and wrap in quotes to handle internal commas
+                        data = data.replace(/"/g, '""');
+                        rowData.push(`"${data}"`);
+                    });
+                    
+                    csvData.push(rowData.join(','));
+                });
+
+                const csvString = csvData.join('\n');
+                downloadCSV(csvString, file.name.replace(/\.[^/.]+$/, ".csv"));
+                logStatus(`Successfully converted <b>${file.name}</b>`, 'success');
+            };
+
+            reader.onerror = function() {
+                logStatus(`Error reading <b>${file.name}</b>`, 'error');
+            };
+
+            // Read the file as text so we can parse the HTML
+            reader.readAsText(file);
+        }
+
+        function downloadCSV(csvContent, filename) {
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            const url = URL.createObjectURL(blob);
+            
+            link.setAttribute("href", url);
+            link.setAttribute("download", filename);
+            link.style.visibility = 'hidden';
+            
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        function logStatus(message, type) {
+            const p = document.createElement('p');
+            p.innerHTML = message;
+            p.className = type;
+            statusDiv.appendChild(p);
+        }
+    </script>
+</body>
+</html>

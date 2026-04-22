@@ -236,6 +236,45 @@
             }
         }
 
+        // --- UPDATED: Column Type Inference Engine (Now handles Dates) ---
+        function getColumnTypes(dataArray) {
+            if (dataArray.length <= 1) return []; 
+            const numCols = dataArray[0].length;
+            let colTypes = new Array(numCols).fill('number'); 
+
+            // Regex to aggressively spot potential dates and timestamps (e.g., 2026-04-22, 4/22/2026, 15:30:00)
+            const dateHeuristic = /^(\d{1,4}[-/]\d{1,2}[-/]\d{1,4}|\d{1,2}:\d{2}(:\d{2})?)/;
+
+            for (let col = 0; col < numCols; col++) {
+                let foundDate = false;
+                let foundString = false;
+
+                for (let row = 1; row < dataArray.length; row++) { 
+                    let cell = (dataArray[row][col] || "").toString().trim();
+                    if (cell === "") continue;
+
+                    // 1. Is it a Date? Check pattern AND ensure JS can parse it
+                    if (dateHeuristic.test(cell) && !isNaN(Date.parse(cell))) {
+                        foundDate = true;
+                        continue;
+                    }
+
+                    // 2. Is it a strict String? (Letters, leading zeros, or very long numbers)
+                    if (isNaN(cell) || (cell.startsWith('0') && cell.length > 1) || cell.length >= 11) {
+                        foundString = true;
+                        break; 
+                    }
+                }
+
+                if (foundString) {
+                    colTypes[col] = 'string';
+                } else if (foundDate) {
+                    colTypes[col] = 'date';
+                }
+            }
+            return colTypes;
+        }
+
         function routeExport(dataArray, filename, format) {
             if (format === 'csv') {
                 exportCSV(dataArray, filename);
@@ -245,16 +284,23 @@
         }
 
         function exportCSV(dataArray, baseFilename) {
-            let csvData = dataArray.map(row => {
-                return row.map(cell => {
-                    let escaped = cell.replace(/"/g, '""');
+            const colTypes = getColumnTypes(dataArray);
+
+            let csvData = dataArray.map((row, rowIndex) => {
+                return row.map((cellText, colIndex) => {
+                    let text = (cellText || "").toString().trim();
+                    let escaped = text.replace(/"/g, '""');
+
+                    if (rowIndex === 0) return `"${escaped}"`;
+
+                    let type = colTypes[colIndex];
                     
-                    // If the cell starts with a zero and has other digits (e.g., 001A, 0123)
-                    // OR if it's a very long number that Excel might turn into scientific notation
-                    if (/^0[0-9]+/.test(cell) || (/^[0-9]+$/.test(cell) && cell.length > 11)) {
-                        // Use Excel's formula hack to force text rendering
-                        return `="${escaped}"`;
+                    if (type === 'string' && /^[0-9]+$/.test(text) && text !== "") {
+                        return `="${escaped}"`; 
                     }
+                    
+                    // Note: CSV doesn't have native "date" objects, so we just output the string normally. 
+                    // Excel's CSV importer will handle parsing it natively when opened.
                     return `"${escaped}"`;
                 }).join(',');
             }).join('\n');
@@ -275,12 +321,29 @@
                 return;
             }
             try {
-                // Map the raw data into explicit "String" cell objects so Excel cannot parse them as numbers
-                const formattedSheetData = dataArray.map(row => 
-                    row.map(cell => ({ v: cell, t: 's' }))
-                );
+                const colTypes = getColumnTypes(dataArray);
 
-                const worksheet = XLSX.utils.aoa_to_sheet(formattedSheetData);
+                const formattedSheetData = dataArray.map((row, rowIndex) => {
+                    return row.map((cellText, colIndex) => {
+                        if (rowIndex === 0) return { v: cellText, t: 's' };
+
+                        let type = colTypes[colIndex];
+                        let text = (cellText || "").toString().trim();
+                        if (text === "") return { v: "", t: 's' };
+
+                        if (type === 'number') {
+                            return { v: Number(text), t: 'n' };
+                        } else if (type === 'date') {
+                            // Convert the string into a real JavaScript Date Object
+                            // The 'd' flag tells SheetJS it's a date.
+                            return { v: new Date(text), t: 'd' }; 
+                        } else {
+                            return { v: text, t: 's' }; 
+                        }
+                    });
+                });
+
+                const worksheet = XLSX.utils.aoa_to_sheet(formattedSheetData, { cellDates: true });
                 const workbook = XLSX.utils.book_new();
                 XLSX.utils.book_append_sheet(workbook, worksheet, "Data");
                 XLSX.writeFile(workbook, baseFilename + ".xlsx");

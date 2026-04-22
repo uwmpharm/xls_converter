@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>XLS (HTML) to CSV Batch Converter</title>
+    <title>XLS (HTML) Batch Converter</title>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <style>
         body {
             font-family: system-ui, -apple-system, sans-serif;
@@ -12,12 +13,37 @@
             display: flex;
             flex-direction: column;
             align-items: center;
-            padding: 50px;
+            padding: 40px 20px;
+        }
+        .container {
+            max-width: 600px;
+            width: 100%;
+        }
+        .settings {
+            background: #fff;
+            padding: 15px 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+        }
+        .settings-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .settings-group strong {
+            font-size: 0.95rem;
+            color: #444;
+        }
+        label {
+            font-size: 0.9rem;
+            cursor: pointer;
         }
         #drop-zone {
             width: 100%;
-            max-width: 600px;
-            height: 250px;
+            height: 200px;
             border: 3px dashed #007bff;
             border-radius: 15px;
             background-color: #fff;
@@ -27,8 +53,9 @@
             text-align: center;
             font-size: 1.2rem;
             color: #555;
-            transition: background-color 0.3s, border-color 0.3s;
+            transition: all 0.3s;
             cursor: pointer;
+            box-sizing: border-box;
         }
         #drop-zone.dragover {
             background-color: #e3f2fd;
@@ -37,30 +64,45 @@
         }
         #status {
             margin-top: 20px;
-            max-width: 600px;
-            width: 100%;
             font-size: 0.9rem;
+            max-height: 200px;
+            overflow-y: auto;
         }
-        .success { color: green; }
-        .error { color: red; }
+        .success { color: #28a745; margin: 4px 0; }
+        .error { color: #dc3545; margin: 4px 0; }
     </style>
 </head>
 <body>
 
-    <h2>XLS (HTML) to CSV Converter</h2>
-    <p>Drag and drop your "fake" .xls files below. Headers will be converted to snake_case.</p>
+    <div class="container">
+        <h2 style="text-align: center;">Fake XLS to Real Data Converter</h2>
+        <p style="text-align: center; margin-bottom: 30px;">Choose your settings, then drag and drop your files below.</p>
 
-    <div id="drop-zone">
-        Drag & Drop your .xls files here
+        <div class="settings">
+            <div class="settings-group">
+                <strong>Output Format:</strong>
+                <label><input type="radio" name="format" value="csv" checked> Convert to .csv</label>
+                <label><input type="radio" name="format" value="xlsx"> Convert to .xlsx</label>
+            </div>
+            <div class="settings-group">
+                <strong>Headers:</strong>
+                <label><input type="radio" name="headers" value="keep" checked> Keep original headers</label>
+                <label><input type="radio" name="headers" value="snake"> Convert to snake_case</label>
+            </div>
+        </div>
+
+        <div id="drop-zone">
+            Drag & Drop your .xls files here
+        </div>
+
+        <div id="status"></div>
     </div>
-
-    <div id="status"></div>
 
     <script>
         const dropZone = document.getElementById('drop-zone');
         const statusDiv = document.getElementById('status');
 
-        // Prevent default browser behavior for drag-and-drop
+        // Prevent default browser behavior
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
             dropZone.addEventListener(eventName, preventDefaults, false);
             document.body.addEventListener(eventName, preventDefaults, false);
@@ -71,7 +113,7 @@
             e.stopPropagation();
         }
 
-        // Highlight drop zone on hover
+        // Highlight drop zone
         ['dragenter', 'dragover'].forEach(eventName => {
             dropZone.addEventListener(eventName, () => dropZone.classList.add('dragover'), false);
         });
@@ -91,13 +133,12 @@
             Array.from(files).forEach(processFile);
         }
 
-        // Helper function to convert text to snake_case
         function toSnakeCase(str) {
             return str
                 .trim()
                 .toLowerCase()
-                .replace(/[^a-z0-9]+/g, '_') // Replace spaces/special chars with underscores
-                .replace(/^_+|_+$/g, '');    // Remove any leading or trailing underscores
+                .replace(/[^a-z0-9]+/g, '_')
+                .replace(/^_+|_+$/g, '');
         }
 
         function processFile(file) {
@@ -113,16 +154,18 @@
                 const parser = new DOMParser();
                 const doc = parser.parseFromString(htmlContent, 'text/html');
                 
-                // Find the first table in the file
                 const table = doc.querySelector('table');
-                
                 if (!table) {
                     logStatus(`Error: No HTML table found in <b>${file.name}</b>.`, 'error');
                     return;
                 }
 
-                // Convert table to CSV string
-                let csvData = [];
+                // Get User Settings
+                const outputFormat = document.querySelector('input[name="format"]:checked').value;
+                const headerStyle = document.querySelector('input[name="headers"]:checked').value;
+
+                // Extract data into a 2D Array
+                let dataArray = [];
                 const rows = table.querySelectorAll('tr');
                 
                 rows.forEach((row, rowIndex) => {
@@ -130,53 +173,86 @@
                     const cols = row.querySelectorAll('td, th');
                     
                     cols.forEach(col => {
-                        let data = col.innerText.trim();
+                        let text = col.innerText.trim();
                         
-                        // If it is the first row (headers), apply snake_case conversion
-                        if (rowIndex === 0) {
-                            data = toSnakeCase(data);
+                        // Apply snake_case to the first row if selected
+                        if (rowIndex === 0 && headerStyle === 'snake') {
+                            text = toSnakeCase(text);
                         }
                         
-                        // Escape quotes, and wrap in quotes to handle internal commas
-                        data = data.replace(/"/g, '""');
-                        rowData.push(`"${data}"`);
+                        rowData.push(text);
                     });
                     
-                    csvData.push(rowData.join(','));
+                    dataArray.push(rowData);
                 });
 
-                const csvString = csvData.join('\n');
-                downloadCSV(csvString, file.name.replace(/\.[^/.]+$/, ".csv"));
-                logStatus(`Successfully converted <b>${file.name}</b>`, 'success');
+                const baseFilename = file.name.replace(/\.[^/.]+$/, "");
+
+                // Route to appropriate export method
+                if (outputFormat === 'csv') {
+                    exportCSV(dataArray, baseFilename);
+                } else if (outputFormat === 'xlsx') {
+                    exportXLSX(dataArray, baseFilename);
+                }
             };
 
             reader.onerror = function() {
                 logStatus(`Error reading <b>${file.name}</b>`, 'error');
             };
 
-            // Read the file as text so we can parse the HTML
             reader.readAsText(file);
         }
 
-        function downloadCSV(csvContent, filename) {
-            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        function exportCSV(dataArray, baseFilename) {
+            let csvData = dataArray.map(row => {
+                return row.map(cell => {
+                    let escaped = cell.replace(/"/g, '""');
+                    return `"${escaped}"`;
+                }).join(',');
+            }).join('\n');
+
+            const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8;' });
             const link = document.createElement("a");
             const url = URL.createObjectURL(blob);
             
             link.setAttribute("href", url);
-            link.setAttribute("download", filename);
+            link.setAttribute("download", baseFilename + ".csv");
             link.style.visibility = 'hidden';
             
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
+            
+            logStatus(`Successfully converted <b>${baseFilename}.xls</b> to <b>CSV</b>`, 'success');
+        }
+
+        function exportXLSX(dataArray, baseFilename) {
+            if (typeof XLSX === 'undefined') {
+                logStatus(`Error: Excel library failed to load. Please check your internet connection.`, 'error');
+                return;
+            }
+
+            try {
+                // Convert 2D array to SheetJS worksheet
+                const worksheet = XLSX.utils.aoa_to_sheet(dataArray);
+                // Create a new workbook and append the worksheet
+                const workbook = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
+                
+                // Trigger download
+                XLSX.writeFile(workbook, baseFilename + ".xlsx");
+                
+                logStatus(`Successfully converted <b>${baseFilename}.xls</b> to <b>XLSX</b>`, 'success');
+            } catch (err) {
+                logStatus(`Error generating XLSX for <b>${baseFilename}.xls</b>: ${err.message}`, 'error');
+            }
         }
 
         function logStatus(message, type) {
             const p = document.createElement('p');
             p.innerHTML = message;
             p.className = type;
-            statusDiv.appendChild(p);
+            statusDiv.prepend(p); // Add new statuses to the top
         }
     </script>
 </body>

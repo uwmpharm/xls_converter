@@ -75,7 +75,7 @@
             padding: 10px;
             border-radius: 8px;
             box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-            display: none; /* Hidden until there are logs */
+            display: none;
         }
         .success { color: #28a745; margin: 4px 0; }
         .error { color: #dc3545; margin: 4px 0; }
@@ -117,7 +117,6 @@
         const dropZone = document.getElementById('drop-zone');
         const statusDiv = document.getElementById('status');
 
-        // Prevent default browser behavior
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
             dropZone.addEventListener(eventName, preventDefaults, false);
             document.body.addEventListener(eventName, preventDefaults, false);
@@ -128,7 +127,6 @@
             e.stopPropagation();
         }
 
-        // Highlight drop zone
         ['dragenter', 'dragover'].forEach(eventName => {
             dropZone.addEventListener(eventName, () => dropZone.classList.add('dragover'), false);
         });
@@ -137,11 +135,8 @@
             dropZone.addEventListener(eventName, () => dropZone.classList.remove('dragover'), false);
         });
 
-        // Handle dropped files using async/await
         dropZone.addEventListener('drop', async function(e) {
             let files = Array.from(e.dataTransfer.files);
-            
-            // Filter valid files
             let validFiles = files.filter(f => f.name.endsWith('.xls') || f.name.endsWith('.htm') || f.name.endsWith('.html'));
             
             if (validFiles.length === 0) {
@@ -149,7 +144,6 @@
                 return;
             }
 
-            // Get Settings
             const processMode = document.querySelector('input[name="mode"]:checked').value;
             const outputFormat = document.querySelector('input[name="format"]:checked').value;
             const headerStyle = document.querySelector('input[name="headers"]:checked').value;
@@ -162,12 +156,10 @@
             }
         }, false);
 
-        // Utility: Convert text to snake_case
         function toSnakeCase(str) {
             return str.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
         }
 
-        // Utility: Read a file and parse its HTML table into a 2D Array
         function readFileToArray(file, applySnakeCase, skipHeaders) {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -184,7 +176,6 @@
                     const rows = table.querySelectorAll('tr');
                     
                     rows.forEach((row, rowIndex) => {
-                        // If merging and this isn't the first file, skip the header row
                         if (skipHeaders && rowIndex === 0) return;
 
                         let rowData = [];
@@ -192,14 +183,12 @@
                         
                         cols.forEach(col => {
                             let text = col.innerText.trim();
-                            // Apply snake case to headers if requested
                             if (rowIndex === 0 && applySnakeCase && !skipHeaders) {
                                 text = toSnakeCase(text);
                             }
                             rowData.push(text);
                         });
                         
-                        // Only add rows that actually have data
                         if (rowData.length > 0) dataArray.push(rowData);
                     });
                     
@@ -210,7 +199,6 @@
             });
         }
 
-        // Process files individually
         async function processIndividualFile(file, outputFormat, headerStyle) {
             try {
                 const applySnake = (headerStyle === 'snake');
@@ -224,18 +212,14 @@
             }
         }
 
-        // Process files and merge them together
         async function processMergedFiles(files, outputFormat, headerStyle) {
             let masterArray = [];
             let applySnake = (headerStyle === 'snake');
 
             for (let i = 0; i < files.length; i++) {
                 try {
-                    // Only keep headers for the very first file (i === 0)
                     let isNotFirstFile = (i > 0);
                     let fileData = await readFileToArray(files[i], applySnake, isNotFirstFile);
-                    
-                    // Combine the arrays
                     masterArray = masterArray.concat(fileData);
                     logStatus(`Read ${files[i].name}...`, 'success');
                 } catch (error) {
@@ -252,7 +236,6 @@
             }
         }
 
-        // Routing to the correct export function
         function routeExport(dataArray, filename, format) {
             if (format === 'csv') {
                 exportCSV(dataArray, filename);
@@ -263,7 +246,17 @@
 
         function exportCSV(dataArray, baseFilename) {
             let csvData = dataArray.map(row => {
-                return row.map(cell => `"${cell.replace(/"/g, '""')}"`).join(',');
+                return row.map(cell => {
+                    let escaped = cell.replace(/"/g, '""');
+                    
+                    // If the cell starts with a zero and has other digits (e.g., 001A, 0123)
+                    // OR if it's a very long number that Excel might turn into scientific notation
+                    if (/^0[0-9]+/.test(cell) || (/^[0-9]+$/.test(cell) && cell.length > 11)) {
+                        // Use Excel's formula hack to force text rendering
+                        return `="${escaped}"`;
+                    }
+                    return `"${escaped}"`;
+                }).join(',');
             }).join('\n');
 
             const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8;' });
@@ -282,9 +275,14 @@
                 return;
             }
             try {
-                const worksheet = XLSX.utils.aoa_to_sheet(dataArray);
+                // Map the raw data into explicit "String" cell objects so Excel cannot parse them as numbers
+                const formattedSheetData = dataArray.map(row => 
+                    row.map(cell => ({ v: cell, t: 's' }))
+                );
+
+                const worksheet = XLSX.utils.aoa_to_sheet(formattedSheetData);
                 const workbook = XLSX.utils.book_new();
-                XLSX.utils.book_append_sheet(workbook, worksheet, "Merged Data");
+                XLSX.utils.book_append_sheet(workbook, worksheet, "Data");
                 XLSX.writeFile(workbook, baseFilename + ".xlsx");
             } catch (err) {
                 logStatus(`Error generating XLSX: ${err.message}`, 'error');
@@ -292,7 +290,7 @@
         }
 
         function logStatus(message, type) {
-            statusDiv.style.display = 'block'; // Unhide the status container
+            statusDiv.style.display = 'block';
             const p = document.createElement('p');
             p.innerHTML = message;
             p.className = type;

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>XLS (HTML) Batch Converter</title>
+    <title>XLS (HTML) Batch Converter & Merger</title>
     <script src="xlsx.full.min.js"></script>
     <style>
         body {
@@ -16,7 +16,7 @@
             padding: 40px 20px;
         }
         .container {
-            max-width: 600px;
+            max-width: 750px;
             width: 100%;
         }
         .settings {
@@ -27,11 +27,15 @@
             margin-bottom: 20px;
             display: flex;
             justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 15px;
         }
         .settings-group {
             display: flex;
             flex-direction: column;
             gap: 8px;
+            flex: 1;
+            min-width: 200px;
         }
         .settings-group strong {
             font-size: 0.95rem;
@@ -65,29 +69,40 @@
         #status {
             margin-top: 20px;
             font-size: 0.9rem;
-            max-height: 200px;
+            max-height: 250px;
             overflow-y: auto;
+            background: #fff;
+            padding: 10px;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            display: none; /* Hidden until there are logs */
         }
         .success { color: #28a745; margin: 4px 0; }
         .error { color: #dc3545; margin: 4px 0; }
+        .info { color: #007bff; margin: 4px 0; font-weight: bold; }
     </style>
 </head>
 <body>
 
     <div class="container">
-        <h2 style="text-align: center;">Fake XLS to Real Data Converter</h2>
+        <h2 style="text-align: center;">Batch Converter & Merger</h2>
         <p style="text-align: center; margin-bottom: 30px;">Choose your settings, then drag and drop your files below.</p>
 
         <div class="settings">
             <div class="settings-group">
+                <strong>Processing Mode:</strong>
+                <label><input type="radio" name="mode" value="separate" checked> Convert Individually</label>
+                <label><input type="radio" name="mode" value="merge"> Merge into One File</label>
+            </div>
+            <div class="settings-group">
                 <strong>Output Format:</strong>
-                <label><input type="radio" name="format" value="csv" checked> Convert to .csv</label>
-                <label><input type="radio" name="format" value="xlsx"> Convert to .xlsx</label>
+                <label><input type="radio" name="format" value="csv" checked> .csv</label>
+                <label><input type="radio" name="format" value="xlsx"> .xlsx</label>
             </div>
             <div class="settings-group">
                 <strong>Headers:</strong>
-                <label><input type="radio" name="headers" value="keep" checked> Keep original headers</label>
-                <label><input type="radio" name="headers" value="snake"> Convert to snake_case</label>
+                <label><input type="radio" name="headers" value="keep" checked> Keep original</label>
+                <label><input type="radio" name="headers" value="snake"> snake_case</label>
             </div>
         </div>
 
@@ -122,137 +137,166 @@
             dropZone.addEventListener(eventName, () => dropZone.classList.remove('dragover'), false);
         });
 
-        // Handle dropped files
-        dropZone.addEventListener('drop', handleDrop, false);
-
-        function handleDrop(e) {
-            let dt = e.dataTransfer;
-            let files = dt.files;
-            statusDiv.innerHTML = ''; // Clear previous statuses
-
-            Array.from(files).forEach(processFile);
-        }
-
-        function toSnakeCase(str) {
-            return str
-                .trim()
-                .toLowerCase()
-                .replace(/[^a-z0-9]+/g, '_')
-                .replace(/^_+|_+$/g, '');
-        }
-
-        function processFile(file) {
-            if (!file.name.endsWith('.xls') && !file.name.endsWith('.htm') && !file.name.endsWith('.html')) {
-                logStatus(`Skipped <b>${file.name}</b>: Not a recognized extension.`, 'error');
+        // Handle dropped files using async/await
+        dropZone.addEventListener('drop', async function(e) {
+            let files = Array.from(e.dataTransfer.files);
+            
+            // Filter valid files
+            let validFiles = files.filter(f => f.name.endsWith('.xls') || f.name.endsWith('.htm') || f.name.endsWith('.html'));
+            
+            if (validFiles.length === 0) {
+                logStatus("No valid .xls/.htm files found in the drop.", "error");
                 return;
             }
 
-            const reader = new FileReader();
-            
-            reader.onload = function(e) {
-                const htmlContent = e.target.result;
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(htmlContent, 'text/html');
-                
-                const table = doc.querySelector('table');
-                if (!table) {
-                    logStatus(`Error: No HTML table found in <b>${file.name}</b>.`, 'error');
-                    return;
-                }
+            // Get Settings
+            const processMode = document.querySelector('input[name="mode"]:checked').value;
+            const outputFormat = document.querySelector('input[name="format"]:checked').value;
+            const headerStyle = document.querySelector('input[name="headers"]:checked').value;
 
-                // Get User Settings
-                const outputFormat = document.querySelector('input[name="format"]:checked').value;
-                const headerStyle = document.querySelector('input[name="headers"]:checked').value;
+            if (processMode === 'merge') {
+                logStatus(`Starting merge of ${validFiles.length} files...`, "info");
+                await processMergedFiles(validFiles, outputFormat, headerStyle);
+            } else {
+                validFiles.forEach(file => processIndividualFile(file, outputFormat, headerStyle));
+            }
+        }, false);
 
-                // Extract data into a 2D Array
-                let dataArray = [];
-                const rows = table.querySelectorAll('tr');
-                
-                rows.forEach((row, rowIndex) => {
-                    let rowData = [];
-                    const cols = row.querySelectorAll('td, th');
+        // Utility: Convert text to snake_case
+        function toSnakeCase(str) {
+            return str.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        }
+
+        // Utility: Read a file and parse its HTML table into a 2D Array
+        function readFileToArray(file, applySnakeCase, skipHeaders) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const doc = new DOMParser().parseFromString(e.target.result, 'text/html');
+                    const table = doc.querySelector('table');
                     
-                    cols.forEach(col => {
-                        let text = col.innerText.trim();
+                    if (!table) {
+                        reject(`No table found in ${file.name}`);
+                        return;
+                    }
+
+                    let dataArray = [];
+                    const rows = table.querySelectorAll('tr');
+                    
+                    rows.forEach((row, rowIndex) => {
+                        // If merging and this isn't the first file, skip the header row
+                        if (skipHeaders && rowIndex === 0) return;
+
+                        let rowData = [];
+                        const cols = row.querySelectorAll('td, th');
                         
-                        // Apply snake_case to the first row if selected
-                        if (rowIndex === 0 && headerStyle === 'snake') {
-                            text = toSnakeCase(text);
-                        }
+                        cols.forEach(col => {
+                            let text = col.innerText.trim();
+                            // Apply snake case to headers if requested
+                            if (rowIndex === 0 && applySnakeCase && !skipHeaders) {
+                                text = toSnakeCase(text);
+                            }
+                            rowData.push(text);
+                        });
                         
-                        rowData.push(text);
+                        // Only add rows that actually have data
+                        if (rowData.length > 0) dataArray.push(rowData);
                     });
                     
-                    dataArray.push(rowData);
-                });
+                    resolve(dataArray);
+                };
+                reader.onerror = () => reject(`Failed to read ${file.name}`);
+                reader.readAsText(file);
+            });
+        }
 
+        // Process files individually
+        async function processIndividualFile(file, outputFormat, headerStyle) {
+            try {
+                const applySnake = (headerStyle === 'snake');
+                const dataArray = await readFileToArray(file, applySnake, false);
                 const baseFilename = file.name.replace(/\.[^/.]+$/, "");
+                
+                routeExport(dataArray, baseFilename, outputFormat);
+                logStatus(`Successfully converted <b>${file.name}</b>`, 'success');
+            } catch (error) {
+                logStatus(error, 'error');
+            }
+        }
 
-                // Route to appropriate export method
-                if (outputFormat === 'csv') {
-                    exportCSV(dataArray, baseFilename);
-                } else if (outputFormat === 'xlsx') {
-                    exportXLSX(dataArray, baseFilename);
+        // Process files and merge them together
+        async function processMergedFiles(files, outputFormat, headerStyle) {
+            let masterArray = [];
+            let applySnake = (headerStyle === 'snake');
+
+            for (let i = 0; i < files.length; i++) {
+                try {
+                    // Only keep headers for the very first file (i === 0)
+                    let isNotFirstFile = (i > 0);
+                    let fileData = await readFileToArray(files[i], applySnake, isNotFirstFile);
+                    
+                    // Combine the arrays
+                    masterArray = masterArray.concat(fileData);
+                    logStatus(`Read ${files[i].name}...`, 'success');
+                } catch (error) {
+                    logStatus(error, 'error');
                 }
-            };
+            }
 
-            reader.onerror = function() {
-                logStatus(`Error reading <b>${file.name}</b>`, 'error');
-            };
+            if (masterArray.length > 0) {
+                const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0,19);
+                routeExport(masterArray, `Merged_Export_${timestamp}`, outputFormat);
+                logStatus(`<b>All files merged successfully!</b>`, 'info');
+            } else {
+                logStatus("Merge failed: No data extracted.", 'error');
+            }
+        }
 
-            reader.readAsText(file);
+        // Routing to the correct export function
+        function routeExport(dataArray, filename, format) {
+            if (format === 'csv') {
+                exportCSV(dataArray, filename);
+            } else if (format === 'xlsx') {
+                exportXLSX(dataArray, filename);
+            }
         }
 
         function exportCSV(dataArray, baseFilename) {
             let csvData = dataArray.map(row => {
-                return row.map(cell => {
-                    let escaped = cell.replace(/"/g, '""');
-                    return `"${escaped}"`;
-                }).join(',');
+                return row.map(cell => `"${cell.replace(/"/g, '""')}"`).join(',');
             }).join('\n');
 
             const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8;' });
             const link = document.createElement("a");
-            const url = URL.createObjectURL(blob);
-            
-            link.setAttribute("href", url);
-            link.setAttribute("download", baseFilename + ".csv");
-            link.style.visibility = 'hidden';
-            
+            link.href = URL.createObjectURL(blob);
+            link.download = baseFilename + ".csv";
+            link.style.display = 'none';
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
-            
-            logStatus(`Successfully converted <b>${baseFilename}.xls</b> to <b>CSV</b>`, 'success');
         }
 
         function exportXLSX(dataArray, baseFilename) {
             if (typeof XLSX === 'undefined') {
-                logStatus(`Error: Excel library failed to load. Please check your internet connection.`, 'error');
+                logStatus(`Error: Excel library missing.`, 'error');
                 return;
             }
-
             try {
-                // Convert 2D array to SheetJS worksheet
                 const worksheet = XLSX.utils.aoa_to_sheet(dataArray);
-                // Create a new workbook and append the worksheet
                 const workbook = XLSX.utils.book_new();
-                XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
-                
-                // Trigger download
+                XLSX.utils.book_append_sheet(workbook, worksheet, "Merged Data");
                 XLSX.writeFile(workbook, baseFilename + ".xlsx");
-                
-                logStatus(`Successfully converted <b>${baseFilename}.xls</b> to <b>XLSX</b>`, 'success');
             } catch (err) {
-                logStatus(`Error generating XLSX for <b>${baseFilename}.xls</b>: ${err.message}`, 'error');
+                logStatus(`Error generating XLSX: ${err.message}`, 'error');
             }
         }
 
         function logStatus(message, type) {
+            statusDiv.style.display = 'block'; // Unhide the status container
             const p = document.createElement('p');
             p.innerHTML = message;
             p.className = type;
-            statusDiv.prepend(p); // Add new statuses to the top
+            statusDiv.prepend(p);
         }
     </script>
 </body>
